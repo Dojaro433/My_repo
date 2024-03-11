@@ -1,0 +1,41 @@
+########### Uninstall_postgres#############
+
+---
+- name: Uninstall PostgreSQL
+  hosts: 
+    - master
+    - slave
+    - backup_server
+  become: yes
+  gather_facts: false
+
+  tasks:
+    - name: Remove PostgreSQL server package
+      apt:
+        name: postgresql
+        state: absent
+
+    - name: Remove PostgreSQL client package
+      apt:
+        name: postgresql-client
+        state: absent
+
+    - name: Remove PostgreSQL common package
+      apt:
+        name: postgresql-common
+        state: absent
+
+    - name: Remove PostgreSQL dependencies
+      apt:
+        name: "{{ item }}"
+        state: absent
+      with_items:
+        - libpq-dev
+        - postgresql-client-common
+        - postgresql-contrib
+
+    - name: Remove PostgreSQL data directory
+      file:
+        path: /var/lib/postgresql
+        state: absent
+        recurse: yes
