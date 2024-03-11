@@ -1,0 +1,17 @@
+######### Pramote_MASTER ##############
+
+
+---
+
+- name: Promote Backup Node to Master
+  hosts: master
+  become: true
+  gather_facts: false
+  tasks: 
+    - name: Configure Master Server
+      block:
+        ## Promoting Node to master node
+        - name: Promoting Node to master node
+          command: /usr/lib/postgresql/14/bin/pg_ctl promote -D /var/lib/postgresql/14/main/
+      become: true
+      become_user: postgres
