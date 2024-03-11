@@ -1,0 +1,133 @@
+################  Server_node_configuration ###################
+
+
+---
+- name: Configure Nodes
+  hosts: 
+    - fastag_server
+  become: true
+
+  vars_files:
+    - "../vars/vars.yml"
+
+  tasks: 
+
+    - name: Install fail2ban
+      apt:
+        name: fail2ban
+        state: present
+
+    # Allow network connection on 5000 PORT
+    - name: Allow new incoming connections on TCP port 5000 (SSH)
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: 5000
+        jump: ACCEPT
+        comment: Accept new SSH connections.
+
+    - name: Save IP Rules
+      command: netfilter-persistent save
+
+    - name: Reload Net-Persistant
+      command: netfilter-persistent reload
+        
+    ## Create a user group
+    - name: Creating a user group 
+      group: 
+        name: "devops"
+        state: present
+    
+    ## Create a User with SHA-512 hashed password
+    - name: Create user
+      user: 
+        name: "devops2"
+        password: "{{ User_Password }}"
+        state: present
+    
+    ## Add User to the group
+    - name: Add user to group
+      ansible.builtin.user: 
+        name: devops2
+        shell: /bin/bash
+        groups: devops
+    
+    ## Add user to sudoers
+    - name: Add provision user to the sudoers
+      copy: 
+          dest: "/etc/sudoers.d/devops2"
+          content: "devops2  ALL=(ALL)  PASSWD: ALL"
+
+    ## UPdate home directory permission to new User
+    - name: Update home directory permission
+      file: 
+        path: /home/devops
+        state: directory
+        owner: devops2
+        group: devops
+        mode: 0700
+
+    ## Create SSH directory for a new User
+    - name: Creates SSH Dircetory
+      file: 
+        path: /home/devops2/.ssh
+        state: directory
+        owner: devops2
+        group: devops
+
+    ## Copy SSH KEYS on New User's SSH Directories
+    - name: Copy Auth keys
+      template: 
+        src: ../templates/authorized_keys
+        dest: /home/devops2/.ssh/authorized_keys
+
+    ## Disable password authentication for new User
+    - name: Disable Password Authentication
+      lineinfile: 
+            dest: /etc/ssh/sshd_config
+            regexp: '^PasswordAuthentication'
+            line: "PasswordAuthentication no"
+            state: present
+            backup: yes
+      notify: 
+        - restart ssh
+
+    ## Update Default SSH PORT to 5000
+    - name: Change SSH Default PORT
+      lineinfile: 
+            dest: /etc/ssh/sshd_config
+            regexp: '^Port'
+            line: "Port 5000"
+            state: present
+            backup: yes
+      # notify: 
+      #   - restart ssh
+
+    - name: Restart SSHd service
+      service:
+        name: sshd
+        state: restarted
+
+    - name: Setup selinux for alternate SSH port
+      seport:
+        ports: "5000"
+        proto: "tcp"
+        setype: "ssh_port_t"
+        state: "present"
+
+    # Disable root user login
+    - name: Disable Root Login
+      lineinfile:
+            dest=/etc/ssh/sshd_config
+            regexp='^PermitRootLogin'
+            line="PermitRootLogin no"
+            state=present
+            backup=yes
+      notify:
+        - restart ssh
+
+  handlers: 
+    - name: restart ssh
+      service: 
+        name: sshd
+        state: restar
