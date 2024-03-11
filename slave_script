@@ -1,0 +1,229 @@
+######### ---
+
+- name: Grab Gateway IP
+  hosts: gateway_server
+  become: true
+  gather_facts: false
+  tasks:
+
+    ## Grabbing Gateway's private IP and stroring it in a variable
+    - name: Grab Private Ip
+      shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+      register: command_output_gateway
+
+    - name: Set command output as a fact
+      set_fact:
+        gateway_output: "{{ command_output_gateway.stdout }}"
+
+- name: Grab Backup IP
+  hosts: backup_server
+  become: true
+  gather_facts: false
+  tasks:
+    ## Grabbing Backup server's private IP and stroring it in a variable
+    - name: Grab Private Ip
+      shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+      register: command_output_backup
+
+    - name: Set command output as a fact
+      set_fact:
+        gateway_output: "{{ command_output_backup.stdout }}"
+
+- name: Slave IP Whitelisting
+  hosts: slave
+  become: true
+  gather_facts: false
+  tasks:
+
+    ## Whitelisting Gateway IP on Slave Node
+    - name: Configure slave server
+      shell: iptables -A INPUT -s {{ hostvars[item].command_output_gateway.stdout }} -p tcp --dport 5432 -j ACCEPT
+      loop: "{{ groups['gateway_server'] }}"
+
+    - name: Save IP Rules
+      command: netfilter-persistent save
+
+    - name: Reload Net-Persistant
+      command: netfilter-persistent reload
+
+    ## Grabbing Slave server's private IP and stroring it in a variable
+    - name: Grab Private Ip
+      shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+      register: command_output
+
+    - name: Set command output as a fact
+      set_fact:
+        slave_output: "{{ command_output.stdout }}"
+
+- name: Allow Connections on Master for Slave
+  hosts: master
+  become: true
+  gather_facts: false
+  vars_files:
+    - "./vars/vars.yml"
+  tasks:
+    # - name: Print hostvars
+    #   debug: var=hostvars[item].command_output.stdout
+    #   loop: "{{ groups['slave'] }}"
+
+    ## Grabbing Master server's private IP and stroring it in a variable
+    - name: Grab Private Ip
+      shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+      register: command_output_master
+
+    - name: Set command output as a fact
+      set_fact:
+        master_output: "{{ command_output_master.stdout }}"
+
+    ## Whitelisting Slave Node's IP on Master Node
+    - name: Whitelist Slave Ips
+      block:
+        - name: Ip whitelist for slave
+          command: iptables -A INPUT -s {{ hostvars[item].command_output.stdout }} -p tcp --dport 5432 -j ACCEPT
+          loop: "{{ groups['slave'] }}"
+
+    ## Whitelisting Backup Node's IP on Master Node
+    - name: Whitelist Backup Ips
+      block:
+        - name: Ip whitelist for Backup
+          command: iptables -A INPUT -s {{ hostvars[item].command_output_backup.stdout }} -p tcp --dport 5432 -j ACCEPT
+          loop: "{{ groups['backup_server'] }}" 
+      when: "'backup_server' in groups"    
+
+    - name: Save IP Rules
+      command: netfilter-persistent save
+
+    - name: Reload Net-Persistant
+      command: netfilter-persistent reload
+
+    ## Updating pg_hba.conf file to accept connection from slave Node as replication user
+    - name: Allow replication connection from Slave
+      lineinfile:
+        dest: /etc/postgresql/14/main/pg_hba.conf
+        line: "host   replication    {{ replication_user }}    {{ hostvars[item].command_output.stdout }}/32   md5"
+      with_items: "{{ groups['slave'] }}"
+      become: true
+      become_user: root
+      notify: restart postgresql
+
+    ## Updating pg_hba.conf file to accept connection from backup Node as replication user
+    - name: Allow replication connection from Backup
+      lineinfile:
+        dest: /etc/postgresql/14/main/pg_hba.conf
+        line: "host   replication    {{ replication_user }}    {{ hostvars[item].command_output_backup.stdout }}/32   md5"
+      with_items: "{{ groups['backup_server'] }}"
+      become: true
+      become_user: root
+      notify: restart postgresql
+      when: "'backup_server' in groups"
+
+  handlers:
+    - name: restart postgresql
+      service:
+        name: postgresql
+        state: restarted
+
+- name: PostgreSQL Master-Slave Replication Automation
+  hosts: 
+   - slave
+   - backup_server
+  become: true
+  vars_files:
+  - "./vars/vars.yml"  
+  tasks:
+
+    ## Configuring Slave Nodes and Backup Nodes
+    - name: Configure slave server
+      block:
+        ## Stopiing Postgresql service
+        - name: Stop PostgreSQL service
+          service:
+            name: postgresql
+            state: stopped
+          notify: replicate_data
+
+        ## Removing Data directory for postgresql
+        - name: Remove existing data directory
+          file:
+            path: /mnt/pgvolume/postgresql/14/main
+            state: absent
+            
+        ## Grabbing private ip of slave node and backup node and storing it in a variable
+        - name: Grab Private Ip
+          shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+          register: command_output
+
+        ## Replacing Dots(.) in the private IPs of slave node and backup node with Underscore(_) and storing it in a variable
+        ## Used to name the slave slot
+        - name: Grab Hostname
+          shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2 | sed s/\[.]/_/g
+          register: command_output_hostname
+
+        - name: Set Permission
+          shell: |
+            chown -R postgres:postgres /mnt/pgvolume
+            chmod -R 777 /mnt/pgvolume
+          become: true
+          become_user: root
+
+        ## Taking backup from Master Node into slave node and Backup node and also enabling replication
+        - name: Copy data directory from master
+          shell: |
+            PGPASSWORD={{ replication_password }} pg_basebackup -h {{ hostvars[item].command_output_master.stdout }} --dbname postgresql://{{ hostvars[item].command_output_master.stdout }}:5432/{{ db_name }}?sslmode=require -D /mnt/pgvolume/postgresql/14/main/ -U {{ replication_user }} -P -v -R -X stream -C -S slave_{{ command_output_hostname.stdout }}
+          args:
+            creates: /mnt/pgvolume/postgresql/14/main/recovery.done
+          loop: "{{ groups['master'] }}"
+          register: copy_result
+          become: true
+          become_user: postgres
+          
+        ## Updating postgres.conf file in slave node and backup node to listem on private IP address
+        - name: Enable listen address
+          lineinfile:
+            dest: /etc/postgresql/14/main/postgresql.conf
+            regexp: "^#?listen_addresses = .*"
+            line: "listen_addresses = 'localhost, {{ command_output.stdout }}'"
+          notify: restart postgresql   
+
+        - name: Set max_connections
+          lineinfile:
+            dest: /etc/postgresql/14/main/postgresql.conf
+            regexp: "^#?max_connections\\s*=.*"
+            line: "max_connections = 300"
+          notify: restart postgresql
+
+        ## Updating pg_hba.conf file to accept connections from gateway (backup node will not accept connection from slave)
+        - name: Allow gateway connection into Slave
+          lineinfile:
+            dest: /etc/postgresql/14/main/pg_hba.conf
+            line: "host   all    all    {{ hostvars[item].command_output_gateway.stdout }}/32   md5"
+          loop: "{{ groups['gateway_server'] }}"
+          when: inventory_hostname in groups['slave'] ## This will only run for slave node's and ignore backup nodes
+          notify: restart postgresql
+
+        ## Granting correct access permission to postgres user
+        # - name: Ensure correct ownership of copied data
+        #   file:
+        #     path: /mnt/pgvolume/postgresql/14/main/
+        #     owner: postgres
+        #     group: postgres
+        #     state: directory
+        #     mode: 777
+        #     recurse: yes
+
+        ## Restarting POstgresql service
+        - name: Restart PostgreSQL service
+          service:
+            name: postgresql
+            state: restarted
+
+  handlers:
+    - name: restart postgresql
+      service:
+        name: postgresql
+        state: restarted
+
+    - name: replicate_data
+      service:
+        name: postgresql
+        state: started
