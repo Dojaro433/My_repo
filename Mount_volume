@@ -1,0 +1,40 @@
+############# D Mount_volume #################
+
+---
+
+- name: Mount Volume To Nodes
+  hosts: 
+    - fastag_server
+  become: true
+
+  tasks: 
+    - name: Create volume Dircetory
+      file:
+        path: /mnt/pgvolume
+        state: directory
+
+    - name: Check if extension EXISTS
+      shell: |
+        (lsblk --fs | grep "vdb" | awk '{print $2}')
+      register: fs_output
+
+    - name: Configure FS type
+      command: mkfs.ext4 /dev/vdb
+      when: "fs_output.stdout != 'ext4'"
+
+    - name: Mount a Volume to directory
+      command: mount -t auto -v /dev/vdb /mnt/pgvolume
+
+    - name: Grab UUID of Volume
+      shell: |
+        blkid | grep '/dev/vdb' | cut -d ' ' -f 2 | cut -d '=' -f 2 | tr -d '"'
+      register: vol_uuid
+
+    - name: Add Volume to vftab
+      lineinfile:
+        dest: /etc/fstab
+        line: "UUID={{ vol_uuid.stdout }}   /mnt/pgvolume   ext4    defaults    0   0"
+
+
+#Command to extend volume
+# resize2fs /dev/vdb
