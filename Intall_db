@@ -1,0 +1,112 @@
+#################### Install_postgres ###########################
+---
+- name: Install PostgreSQL 14
+  hosts:     
+    - fastag_server
+
+  tasks:
+    ## Update APT Cache
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      when: ansible_os_family == 'Debian'
+
+    ## Install PostgreSQL repository key
+    - name: Install PostgreSQL repository key
+      apt_key:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        state: present
+      when: ansible_os_family == 'Debian'
+
+    ## Add Postgres to repository
+    - name: Add PostgreSQL repository
+      apt_repository:
+        repo: deb http://apt.postgresql.org/pub/repos/apt/ {{ ansible_distribution_release }}-pgdg main
+        state: present
+      when: ansible_os_family == 'Debian'
+
+    ## Installing Postgres server
+    - name: Install PostgreSQL server package
+      apt:
+        name: postgresql-14
+        state: present
+      when: ansible_os_family == 'Debian'
+
+    ## Installing Postgis package with apt
+    - name: Installation of Postgis
+      apt: 
+        name: postgis
+        state: present
+      when: ansible_os_family == 'Debian'
+
+    - name: Installation of postgresql-14-postgis-3
+      apt: 
+        name: postgresql-14-postgis-3
+        state: present
+      when: ansible_os_family == 'Debian'
+
+    ## Starting postgres service
+    - name: Start and enable PostgreSQL service
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+      when: ansible_os_family == 'Debian'
+
+    ## Installing pip3 
+    - name: install pip3
+      apt: name=python3-pip state=present 
+
+    ## Installing psycopg2-binary needed to run queries, used by ansible
+    - name: "Install Python packages"
+      pip: "name={{ item }}  state=present"
+      with_items:
+        - psycopg2-binary
+    
+    - name: Stop PostgreSQL service
+      service:
+        name: postgresql
+        state: stopped
+
+    - name: Check if pg_data already present
+      stat:
+        path: /mnt/pgvolume/postgresql
+      register: pg_data
+
+    - name: Run Rsync to mimic postgresql directory
+      command: rsync -av /var/lib/postgresql /mnt/pgvolume
+      args: 
+        chdir: /mnt 
+        creates: /mnt/pgvolume/postgresql
+    
+    - name: Update data directory path
+      lineinfile:
+        dest: /etc/postgresql/14/main/postgresql.conf
+        regexp: "^data_directory = .*"
+        line: "data_directory = '/mnt/pgvolume/postgresql/14/main'"
+
+    - name: Restart PostgreSQL service
+      service:
+        name: postgresql
+        state: restarted
+
+    ## Copying extension installation sql file
+    - name: Copy extension template
+      template:
+        src: ../templates/extension.sql
+        dest: /opt/extension.sql
+
+    ## Running sql commands to create extensions
+    - name: Run queries from SQL script
+      postgresql_query:
+        db: postgres
+        path_to_script: /opt/extension.sql
+      become: true
+      become_user: postgres 
+
+  handlers:
+    - name: restart postgresql
+      service:
+        name: postgresql
+        state: restarted
+  
