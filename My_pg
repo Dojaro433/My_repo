@@ -1,0 +1,145 @@
+####################### bouncer ######################
+
+---
+
+- name: Grab Private IP of Slaves and Store
+  hosts: 
+   - slave
+  become: true
+  tasks: 
+      
+    ## Grabbing Private IP of Slave Node and Storing it in a variable
+    - name: Grab Private Ip
+      shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+      register: command_output_slave
+
+    - name: Print hostvars
+      debug: var=hostvars[item].command_output_slave.stdout
+      loop: "{{ groups['slave'] }}"
+
+    - name: Set command output as a fact
+      set_fact:
+        slave_output: "{{ command_output_slave.stdout }}"
+
+- name: Grab Private IP of Master and Store
+  hosts: 
+   - master
+  become: true
+  tasks: 
+    ## Grabbing Private IP of Master Node and Storing it in a variable
+    - name: Grab Private Ip
+      shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+      register: command_output_master
+    
+    - name: Set command output as a fact
+      set_fact:
+        master_output: "{{ command_output_master.stdout }}"
+
+- name: Configure PgBouncer
+  hosts: gateway_server
+  become: true
+
+  vars_files:
+    - "./vars/vars.yml"  
+
+  tasks:
+    ## Grabbing Private IP of Master Node and Storing it in a variable
+    - name: Grab Gateway Private IP
+      shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+      register: command_output
+      
+    ## Allow connections on 6432 PORT
+    - name: Configure IP Whitelist Gateway
+      block:
+        - name: Ip whitelist
+          command: iptables -A INPUT -p tcp --dport 6432 -j ACCEPT
+
+    - name: Save IP Rules
+      command: netfilter-persistent save
+
+    - name: Reload Net-Persistant
+      command: netfilter-persistent reload
+
+    ## Adding PGDG repository key in apt
+    - name: Add PGDG apt repository key
+      apt_key:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        state: present
+
+    ## Adding PGDG in apt reposiroty
+    - name: Add PGDG apt repository
+      apt_repository:
+        repo: "deb http://apt.postgresql.org/pub/repos/apt/ {{ ansible_distribution_release }}-pgdg main"
+        state: present
+
+    ## Installing pgbouncer using apt
+    - name: Install PgBouncer
+      apt:
+        name: pgbouncer
+        state: present
+
+    - name: Create private key for SSL
+      command: openssl genrsa -out /etc/pgbouncer/server.key 2048
+
+    - name: Set permission and owner for private key
+      shell: |
+        chmod 400 /etc/pgbouncer/server.key
+        chown postgres.postgres /etc/pgbouncer/server.key
+
+    - name: Create CRT file for SSL
+      command: openssl req -new -key /etc/pgbouncer/server.key -days 3650 -out /etc/pgbouncer/server.crt -x509 -subj '/C=IN/ST=Delhi/CN=user/emailAddress=pranay@stackfusion.io'
+
+    ## Replacing pgbouncer.ini file on Gateway Node with the file in our local directory (./templates/pgbouncer.ini.j2)
+    - name: Copy pgbouncer.ini template
+      template:
+        src: templates/pgbouncer.ini.j2
+        dest: "{{ pgbouncer_config_file }}"
+        owner: postgres
+        group: postgres
+        mode: 0640
+
+    ## Replacing userlist.txt file on Gateway Node with the file in our local directory (./templates/userlist.txt.j2)
+    - name: Copy userlist.txt template
+      template:
+        src: templates/userlist.txt.j2
+        dest: "{{ pgbouncer_userlist_file }}"
+        owner: postgres
+        group: postgres
+        mode: 0640    
+
+    ## Starting pgbouncer service
+    - name: Start PgBouncer service
+      service:
+        name: pgbouncer
+        state: started
+
+    ## Installing HAProxy
+    - name: Install HAProxy
+      apt:
+        name: haproxy
+        state: present
+
+    ## Replacing haproxy.cfg file on Gateway Node with the file in our local directory (./templates/haproxy.cfg.j2)
+    - name: Configure HAProxy
+      template:
+        src: templates/haproxy.cfg.j2
+        dest: "{{ haproxy_config_file }}"
+      notify:
+        - Restart HAProxy
+    
+    ## Resting PGBOUNCER 
+    - name: Restart PgBouncer service
+      service:
+        name: pgbouncer
+        state: restarted
+
+  handlers:
+    - name: Restart HAProxy
+      service:
+        name: haproxy
+        state: restarted
+
+    - name: Restart PgBouncer
+      service:
+        name: pgbouncer
+        state: restarted
