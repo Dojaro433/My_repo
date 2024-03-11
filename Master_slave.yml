@@ -1,0 +1,96 @@
+########### Master_slave###############
+
+---
+
+- name: Grab Private IP of Master Node & Slave Node
+  hosts: 
+    - slave
+    - master
+  become: true
+  gather_facts: false
+  tasks:
+
+    ## Grabbing private IP of master and Slave Nodes
+    - name: Grab Private Ip
+      shell: ifconfig ztyxa6biwy | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+      register: command_output
+
+    - name: Set command output as a fact
+      set_fact:
+        master_output: "{{ command_output.stdout }}"
+
+    ## Grabbing public IP of master and Slave Nodes
+    - name: Grab Public Ip
+      shell: ifconfig eth0 | grep -E -o 'inet [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | cut -d' ' -f2
+      register: command_output_public
+
+    - name: Set command output as a fact
+      set_fact:
+        master_output: "{{ command_output_public.stdout }}"
+
+- name: Promote Slave Node to Master
+  hosts: slave
+  become: true
+  gather_facts: false
+  vars_files:
+    - "./vars/vars.yml"
+  tasks: 
+    - name: Whitelist Ips
+      block:
+        ## Whitelisting Slave Nodes and master Node private IP on slave Node which will become new master
+        - name: Ip whitelist for master
+          command: iptables -A INPUT -s {{ hostvars[item].command_output.stdout }} -p tcp --dport 5432 -j ACCEPT
+          loop: "{{ groups['slave'] }}"
+
+        ## Whitelisting Slave Nodes and master Node private IP on slave Node which will become new master
+        - name: Ip whitelist for slave
+          command: iptables -A INPUT -s {{ hostvars[item].command_output.stdout }} -p tcp --dport 5432 -j ACCEPT
+          loop: "{{ groups['master'] }}"
+
+        - name: Save IP Rules
+          command: netfilter-persistent save
+
+        - name: Reload Net-Persistant
+          command: netfilter-persistent reload
+
+    - name: Promote To Master Node
+      block:
+        ## Promoting Node to master node
+        - name: Promote Slave Node to Master
+          command: /usr/lib/postgresql/14/bin/pg_ctl promote -D /var/lib/postgresql/14/main/
+      become: true
+      become_user: postgres
+      when: "inventory_hostname == '164.52.213.9'"
+
+- name: Update inventory.ini file in local
+  hosts: localhost
+  become: true
+  become_user: root
+  vars_files:
+   - "./vars/vars.yml"
+
+  ## Update inventory.ini file in local directory
+  tasks: 
+    - name: Enable WAL shipping on Master
+      lineinfile:
+        dest: ./inventory.ini
+        regexp: "^{{ new_slave }} *"
+        line: "{{ new_slave }} {{ new_master }} ansible_ssh_user=root ansible_ssh_private_key_file=./rsa"
+      become: true
+      become_user: root
+
+    - name: Enable WAL shipping on Master
+      lineinfile:
+        dest: ./inventory.ini
+        regexp: '^{{ new_master }} *'
+        line: "{{ new_slave }} ansible_ssh_user=root ansible_ssh_private_key_file=./rsa"
+      become: true
+      become_user: root
+
+    - name: Enable WAL shipping on Master
+      lineinfile:
+        dest: ./inventory.ini
+        regexp: '^{{ new_slave }} {{ new_master }} *'
+        line: "{{ new_master }} ansible_ssh_user=root ansible_ssh_private_key_file=./rsa"
+      become: true
+      become_user: root
