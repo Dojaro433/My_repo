@@ -1,0 +1,66 @@
+################## Install Docker #########################
+
+---
+
+#ansible-galaxy collection install community.docker
+
+- name: Install Docker 
+  hosts: 
+   - fastag_server
+  become: true
+  tasks: 
+- name: Install Docker
+  hosts: fastag_server
+  become: true 
+
+  vars_files:
+  - "../vars/vars.yml" 
+  tasks:
+
+    ## Installing Docker dependencies
+    - name: Install Docker dependencies
+      package:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+        state: present
+
+    ## Installing Python package for docker
+    - name: Install python3-docker package
+      apt:
+        name: python3-docker
+        state: present
+        
+    ## Installing pip3
+    - name: install pip3
+      apt: name=python3-pip state=present 
+      
+    ## Adding Docker GPG key
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    ## Adding docker in apt repository
+    - name: Add Docker repository
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu bionic stable
+        state: present
+
+    ## Installing docker
+    - name: Install Docker
+      package:
+        name: docker-ce
+        state: present
+        update_cache: yes
+
+    ## Starting docker service
+    - name: Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: true    
+
+    
