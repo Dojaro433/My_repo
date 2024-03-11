@@ -1,0 +1,66 @@
+############ Update_backupo##############
+
+---
+
+- name: Setup Scheduled backups using PG_BACKREST
+  hosts: master
+  become: true
+
+  vars_files:
+    - "./vars/vars.yml"
+
+  tasks: 
+    - name: Setup repository configuration
+      command: sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+
+    - name: Import repository signing key
+      shell: |
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
+
+    - name: Update repositories cache and install PG_BACKREST package
+      ansible.builtin.apt:
+        name: pgbackrest
+        update_cache: yes 
+
+    - name: Copy PG_BACKREST Template
+      template:
+        src: templates/pgbackrest.conf.j2
+        dest: /etc/pgbackrest.conf
+
+    - name: Create PG_BACKREST Stanza
+      command: sudo -u postgres pgbackrest --stanza=db-primary stanza-create
+
+    - name: Enable Archive Mode
+      lineinfile:
+        dest: /etc/postgresql/14/main/postgresql.conf
+        regexp: "^#?archive_mode\\s*=.*"
+        line: "archive_mode = on"
+
+    - name: Setup Archive command
+      lineinfile:
+        dest: /etc/postgresql/14/main/postgresql.conf
+        regexp: "^#?archive_command\\s*=.*"
+        line: "archive_command = 'pgbackrest --stanza=db-primary archive-push %p'"
+
+    - name: Restart PostgreSQL service
+      service:
+        name: postgresql
+        state: restarted
+
+    - name: Ensure a job exists.
+      ansible.builtin.cron:
+        name: "check dirs"
+        minute: "0"
+        hour: "5,22"
+        user: postgres
+        job: "/usr/bin/pgbackrest --stanza=db-primary --type=incr backup"
+
+    # - name: Removing all Crons for postgres User
+    #   shell: |
+    #     sudo su - postgres -c "crontab -r" > /dev/null 2>&1
+
+    # - name: Start Cron for incremental backups
+    #   command: sudo su - postgres -c "crontab -l | { cat; echo '* 5,22 * * * /usr/bin/pgbackrest --stanza=db-primary --type=incr backup'; } | crontab -" > /dev/null 2>&1
+
+
+
